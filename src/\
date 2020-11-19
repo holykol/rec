@@ -1,0 +1,88 @@
+#![feature(str_split_once)]
+#![allow(dead_code)]
+mod lex;
+
+use crate::lex::*;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+
+pub struct DB {
+    rectype: String,
+    primary_key: Option<String>,
+    doc: Option<String>,
+    records: Vec<Record>,
+    // meta field map?
+}
+
+enum Constraint {
+    Allowed(String),
+    Mandatory(String),
+    Phohibit(String),
+    Unique(String),
+}
+
+pub struct Record {
+    rectype: Option<String>,
+    fields: HashMap<String, Field>,
+}
+
+enum FieldKind {}
+
+pub struct Field {
+    name: String,
+    value: String,
+    kind: FieldKind,
+}
+
+pub fn open(path: &Path) -> Result<DB, &'static str> {
+    let mut file = fs::read_to_string(path).map_err(|_| "failed to open file")?;
+    let tokens = lex(&mut file)?;
+
+    parse(&tokens)
+}
+
+fn parse(tokens: &Vec<Token>) -> Result<DB, &'static str> {
+    let mut it = tokens.iter().peekable();
+    while let Some(&t) = it.next() {
+        println!("token: {:?}", t);
+        match t {
+            Token::Keyword(keyword) => match keyword.as_ref() {
+                "rec" => println!("123"),
+                _ => {}
+            },
+            _ => println!("unkown token"),
+        }
+    }
+
+    Err("unimplemented")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn it_works() {
+        let path = Path::new("/home/t/dev/rust/rec/src/test.rec");
+        let _db = open(&path).unwrap();
+    }
+
+    #[test]
+    fn tokenizer() {
+        let tokens = lex(&"%doc: My Books".to_owned()).unwrap();
+        println!("{:?}", tokens);
+        let mut it = tokens.iter();
+        assert_eq!(it.next().unwrap(), &Token::Keyword("doc".to_owned()));
+        assert_eq!(it.next().unwrap(), &Token::Text("My Books".to_owned()));
+
+        const ML: &str = "
+Field:
++ Multi
++ Line";
+        let tokens = lex(&ML.to_owned()).unwrap();
+        println!("{:?}", tokens);
+        let mut it = tokens.iter();
+        assert_eq!(it.next().unwrap(), &Token::Field("Field".to_owned()));
+        assert_eq!(it.next().unwrap(), &Token::Text("Multi\nLine".to_owned()));
+    }
+}

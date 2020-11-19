@@ -1,0 +1,20 @@
+%rec: Account
+%type: Name line
+%type: Login line
+%type: Email email
+%confidential: Password
+
+# Some comments here
+Name: Mr. Foo
+Login: foo
+Email: foo@foo.com
+Password: encrypted-AAABBBCCDDDEEEFFF
+Description:
++ Hello
++ World
+
+Name: Mr. Bar # And there
+Login: bar
+Email: bar@bar.com
+Password: encrypted-AAABBBCCDDDEEEFFF
+Description: Lorem ipsum dolor sit amet
