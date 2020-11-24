@@ -2,7 +2,7 @@
 %type: Name line
 %type: Login line
 %type: Email email
-%confidential: Password
+%confidential: Password = "still not implemented"
 
 # Some comments here
 Name: Mr. Foo
