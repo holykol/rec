@@ -2,9 +2,9 @@
 %type: Name line
 %type: Login line
 %type: Email email
-%confidential: Password = "still not implemented"
+%type: Password int
+%confidential: Password
 
-# Some comments here
 Name: Mr. Foo
 Login: foo
 Email: foo@foo.com
@@ -13,8 +13,7 @@ Description:
 + Hello
 + World
 
-Name: Mr. Bar # And there
+Name: Mr. Bar
 Login: bar
 Email: bar@bar.com
 Password: encrypted-AAABBBCCDDDEEEFFF
-Description: Lorem ipsum dolor sit amet

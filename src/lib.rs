@@ -2,6 +2,7 @@
 #![feature(box_syntax)]
 #![feature(once_cell)]
 #![allow(dead_code)]
+#![allow(unreachable_code)]
 #![allow(unused_variables)]
 
 mod lex;
@@ -12,8 +13,10 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use lazy_static::lazy_static;
 use regex::Regex;
+use uuid::Uuid;
 
 lazy_static! {
     static ref FIELD_RX: Regex = Regex::new("[a-zA-Z%][a-zA-Z0-9_]*").unwrap();
@@ -21,29 +24,13 @@ lazy_static! {
 }
 
 type Key = String;
-
-#[derive(Default, Debug)]
-pub struct DB {
-    rectype: Option<String>,
-    primary_key: Option<String>,
-    doc: Option<String>,
-    types: HashMap<Key, Meta>,
-    records: Vec<Record>,
-}
-
-pub type Record = HashMap<Key, Field>;
-
-#[derive(Debug)]
-pub struct Field {
-    value: String,
-    kind: FieldKind,
-}
+pub type Record = HashMap<Key, Value>;
 
 #[derive(Debug, Default)]
 pub struct Meta {
     unique: bool,
     constraint: Option<Constraint>,
-    kind: Option<FieldKind>,
+    kind: Kind,
 }
 
 #[derive(Debug)]
@@ -53,19 +40,51 @@ enum Constraint {
     Phohibit,
 }
 
-#[derive(Debug)]
-pub enum FieldKind {
+#[derive(Debug, Clone)]
+pub enum Kind {
     Line,
     Int,
     Real,
     Bool,
     Date,
     Email,
-    Field,
     UUID,
+    Confidential,
     Regexp(Regex),
     Viz(String),
     Enum(HashSet<String>),
+}
+
+impl Default for Kind {
+    fn default() -> Self {
+        Kind::Line
+    }
+}
+
+#[derive(Debug)]
+pub enum Value {
+    Line(String),
+    Int(isize),
+    Real(f64),
+    Bool(bool),
+    Date(DateTime<Utc>),
+    Email(String),
+    UUID(Uuid),
+    Confidential(String),
+    Regexp(String),
+    Viz(String),
+    Enum(String),
+}
+
+#[derive(Default, Debug)]
+pub struct DB {
+    rectype: Option<String>,
+    primary_key: Option<String>,
+    doc: Option<String>,
+    types: HashMap<Key, Meta>,
+    records: Vec<Record>,
+    //
+    current_record: Option<Record>,
 }
 
 impl DB {
@@ -83,54 +102,21 @@ impl DB {
 
     fn parse(&mut self, tokens: Vec<Token>) -> Result<(), Box<dyn Error>> {
         let mut records = Vec::new();
-        let mut current_record: Option<Record> = None;
 
         for token in tokens.iter() {
             println!("token: {:?}", token);
             match token {
-                Token::Keyword(keyword, value) => match keyword.as_ref() {
-                    "rec" => self.rectype = Some(value.clone()),
-                    "type" => {
-                        let args: Vec<&str> = value.split_whitespace().collect();
-                        let field_name = args.get(0).unwrap().to_string();
-                        let kind = parse_type(args)?;
-
-                        if !self.types.contains_key(&field_name) {
-                            self.types.insert(field_name.clone(), Meta::default());
-                        }
-
-                        let meta = self.types.get_mut(&field_name).unwrap();
-                        meta.kind = Some(kind)
-                    }
-                    _ => (),
-                },
-                Token::Field(key, value) => {
-                    if current_record.is_none() {
-                        current_record = Some(Default::default())
-                    }
-
-                    match current_record {
-                        Some(ref mut rec) => {
-                            let f = Field {
-                                value: value.clone(),
-                                kind: FieldKind::Line,
-                            };
-
-                            rec.insert(key.clone(), f);
-                        }
-                        None => unreachable!(),
-                    }
-                }
-
+                Token::Keyword(keyword, value) => self.parse_keyword(keyword, value)?,
+                Token::Field(key, value) => self.parse_field(key, value)?,
                 Token::Blank => {
-                    if let Some(rec) = current_record.take() {
+                    if let Some(rec) = self.current_record.take() {
                         records.push(rec);
                     }
                 }
             }
         }
 
-        if let Some(rec) = current_record {
+        if let Some(rec) = self.current_record.take() {
             records.push(rec);
         }
 
@@ -138,10 +124,44 @@ impl DB {
 
         Ok(())
     }
+
+    fn parse_keyword(&mut self, key: &String, value: &String) -> Result<(), Box<dyn Error>> {
+        match key.as_ref() {
+            "rec" => self.rectype = Some(value.clone()),
+            "type" => {
+                let args: Vec<&str> = value.split_whitespace().collect();
+                let field_name = args.get(0).ok_or("expected field name")?.to_string();
+                let kind = parse_type(args)?;
+
+                let meta = self.types.entry(field_name).or_default();
+                meta.kind = kind;
+            }
+            key => println!("unimplemented: {}", key),
+        };
+
+        Ok(())
+    }
+
+    fn parse_field(&mut self, key: &String, value: &String) -> Result<(), Box<dyn Error>> {
+        let mut rec = self.current_record.take().unwrap_or_default();
+
+        let mut kind = Kind::default();
+        if let Some(meta) = self.types.get(key) {
+            kind = meta.kind.clone();
+        }
+
+        println!("{:?}", kind);
+
+        rec.insert(key.clone(), Value::Line(value.clone()));
+
+        // put it back
+        self.current_record = Some(rec);
+        Ok(())
+    }
 }
 
-fn parse_type(args: Vec<&str>) -> Result<FieldKind, Box<dyn Error>> {
-    use FieldKind::*;
+fn parse_type(args: Vec<&str>) -> Result<Kind, Box<dyn Error>> {
+    use Kind::*;
 
     let &tt = args.get(1).ok_or("expected field name")?;
 
@@ -155,8 +175,7 @@ fn parse_type(args: Vec<&str>) -> Result<FieldKind, Box<dyn Error>> {
         "real" => Ok(Real),
         "bool" => Ok(Bool),
         "date" => Ok(Date),
-        "email" => Ok(Date),
-        "field" => Ok(Field),
+        "email" => Ok(Email),
         "uuid" => Ok(UUID),
         "regexp" => {
             let rx = args
@@ -176,7 +195,7 @@ fn parse_type(args: Vec<&str>) -> Result<FieldKind, Box<dyn Error>> {
                 .ok_or("expected field reference as second field")?;
 
             match FIELD_RX.is_match(key) {
-                true => Ok(FieldKind::Viz(key.to_string())),
+                true => Ok(Kind::Viz(key.to_string())),
                 false => Err(format!("invalid viz value: {}", key).into()),
             }
         }
@@ -203,11 +222,12 @@ fn parse_type(args: Vec<&str>) -> Result<FieldKind, Box<dyn Error>> {
 mod tests {
     use super::*;
     #[test]
-    #[ignore = "come back in around 20 years"]
+    //#[ignore = "come back in around 20 years"]
     fn it_works() {
         let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
         let db = DB::new(buf.to_string()).unwrap();
         println!("{:?}", db);
+        todo!()
     }
 
     #[test]
@@ -220,7 +240,7 @@ mod tests {
     fn parser_type_line() {
         let db = DB::new("%type: Book line".to_owned()).unwrap();
         let meta = db.types.get(&"Book".to_owned()).unwrap();
-        assert!(matches!(meta.kind, Some(FieldKind::Line)))
+        assert!(matches!(meta.kind, Kind::Line))
     }
 
     #[test]
@@ -228,7 +248,7 @@ mod tests {
         let db = DB::new("%type: Phone regexp /^[0-9]{10}$/".to_owned()).unwrap();
         let meta = db.types.get(&"Phone".to_owned()).unwrap();
 
-        if let Some(FieldKind::Regexp(ref rx)) = meta.kind {
+        if let Kind::Regexp(ref rx) = meta.kind {
             assert!(rx.is_match("0123456789"));
             assert!(!rx.is_match("blah"));
             return;
@@ -241,7 +261,7 @@ mod tests {
         let db = DB::new("%type: Status enum Loading Done Error".to_owned()).unwrap();
         let meta = db.types.get(&"Status".to_owned()).unwrap();
 
-        if let Some(FieldKind::Enum(ref variants)) = meta.kind {
+        if let Kind::Enum(ref variants) = meta.kind {
             assert_eq!(variants.len(), 3);
             assert!(variants.contains("Loading"));
             assert!(variants.contains("Done"));
