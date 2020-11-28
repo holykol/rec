@@ -50,6 +50,7 @@ pub enum Kind {
     Email,
     UUID,
     Confidential,
+    Range(isize, isize),
     Regexp(Regex),
     Viz(String),
     Enum(HashSet<String>),
@@ -71,6 +72,7 @@ pub enum Value {
     Email(String),
     UUID(Uuid),
     Confidential(String),
+    Range(isize),
     Regexp(String),
     Viz(String),
     Enum(String),
@@ -87,20 +89,22 @@ pub struct DB {
     current_record: Option<Record>,
 }
 
+type Err = Box<dyn Error>;
+
 impl DB {
-    fn new(s: String) -> Result<Self, Box<dyn Error>> {
+    fn new(s: String) -> Result<Self, Err> {
         let mut db = DB::default();
         let tokens = lex(s)?;
 
         db.parse(tokens)?;
         Ok(db)
     }
-    fn new_from_file(path: &Path) -> Result<Self, Box<dyn Error>> {
+    fn new_from_file(path: &Path) -> Result<Self, Err> {
         let file = fs::read_to_string(path).map_err(|_| "failed to open file")?;
         DB::new(file)
     }
 
-    fn parse(&mut self, tokens: Vec<Token>) -> Result<(), Box<dyn Error>> {
+    fn parse(&mut self, tokens: Vec<Token>) -> Result<(), Err> {
         let mut records = Vec::new();
 
         for token in tokens.iter() {
@@ -125,9 +129,9 @@ impl DB {
         Ok(())
     }
 
-    fn parse_keyword(&mut self, key: &String, value: &String) -> Result<(), Box<dyn Error>> {
+    fn parse_keyword(&mut self, key: &str, value: &str) -> Result<(), Err> {
         match key.as_ref() {
-            "rec" => self.rectype = Some(value.clone()),
+            "rec" => self.rectype = Some(value.to_owned()),
             "type" => {
                 let args: Vec<&str> = value.split_whitespace().collect();
                 let field_name = args.get(0).ok_or("expected field name")?.to_string();
@@ -142,17 +146,14 @@ impl DB {
         Ok(())
     }
 
-    fn parse_field(&mut self, key: &String, value: &String) -> Result<(), Box<dyn Error>> {
+    fn parse_field(&mut self, key: &str, value: &str) -> Result<(), Err> {
         let mut rec = self.current_record.take().unwrap_or_default();
 
-        let mut kind = Kind::default();
-        if let Some(meta) = self.types.get(key) {
-            kind = meta.kind.clone();
-        }
+        let meta = self.types.entry(key.to_owned()).or_default();
+        println!("{:?}", meta);
+        let val = parse_value(&meta.kind, value)?;
 
-        println!("{:?}", kind);
-
-        rec.insert(key.clone(), Value::Line(value.clone()));
+        rec.insert(key.to_owned(), val);
 
         // put it back
         self.current_record = Some(rec);
@@ -160,7 +161,52 @@ impl DB {
     }
 }
 
-fn parse_type(args: Vec<&str>) -> Result<Kind, Box<dyn Error>> {
+fn parse_value(kind: &Kind, val: &str) -> Result<Value, Err> {
+    use Value::*;
+
+    Ok(match kind {
+        Kind::Line => Line(val.to_owned()),
+        Kind::Int => Int(val.parse()?),
+        Kind::Real => Real(val.parse()?),
+        Kind::Bool => match val {
+            "true" | "yes" | "1" => Bool(true),
+            "false" | "no" | "0" => Bool(false),
+            _ => Err(format!("unexpected boolean value: {}", val))?,
+        },
+        Kind::Date => todo!("date parsing"),
+        Kind::Email => {
+            if !val.contains('@') {
+                // yes
+                Err(format!("invalid email adress: {}", val))?
+            }
+            Email(val.to_owned())
+        }
+        Kind::UUID => UUID(val.parse()?),
+        Kind::Range(min, max) => {
+            let n = val.parse()?;
+            if n < *min || n > *max {
+                Err("value is out of range")?
+            }
+            Range(n)
+        }
+        Kind::Regexp(rx) => {
+            if !rx.is_match(val) {
+                Err(format!("{} does not match required format", val))?
+            }
+            Regexp(val.to_owned())
+        }
+        Kind::Viz(_) => Viz(val.to_owned()), // We can't validate that other database has the key
+        Kind::Enum(variants) => {
+            if !variants.contains(&val.to_lowercase()) {
+                Err(format!("invalid enum value: {}", val))?
+            }
+            Enum(val.to_lowercase().to_owned())
+        }
+        _ => unimplemented!("{:?}", kind),
+    })
+}
+
+fn parse_type(args: Vec<&str>) -> Result<Kind, Err> {
     use Kind::*;
 
     let &tt = args.get(1).ok_or("expected field name")?;
@@ -169,14 +215,32 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Box<dyn Error>> {
         return Err(format!("invalid field name: {}", tt).into());
     }
 
-    match tt {
-        "line" => Ok(Line),
-        "int" => Ok(Int),
-        "real" => Ok(Real),
-        "bool" => Ok(Bool),
-        "date" => Ok(Date),
-        "email" => Ok(Email),
-        "uuid" => Ok(UUID),
+    Ok(match tt {
+        "line" => Line,
+        "int" => Int,
+        "real" => Real,
+        "bool" => Bool,
+        "date" => Date,
+        "email" => Email,
+        "uuid" => UUID,
+        "range" => {
+            let from;
+            let to;
+
+            if args.len() > 3 {
+                from = parse_bound(args.get(2).ok_or("expected start range index")?)?;
+                to = parse_bound(args.get(3).ok_or("expected end range index")?)?;
+            } else {
+                from = 0;
+                to = parse_bound(args.get(2).ok_or("expected end range index")?)?;
+            }
+
+            if from > to {
+                Err("impossible range")?
+            }
+
+            Kind::Range(from, to)
+        }
         "regexp" => {
             let rx = args
                 .get(2)
@@ -187,7 +251,7 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Box<dyn Error>> {
                 .ok_or("expected regexp to end with slash")?;
 
             let compiled = Regex::new(rx)?;
-            Ok(Regexp(compiled))
+            Regexp(compiled)
         }
         "viz" => {
             let key = args
@@ -195,39 +259,48 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Box<dyn Error>> {
                 .ok_or("expected field reference as second field")?;
 
             match FIELD_RX.is_match(key) {
-                true => Ok(Kind::Viz(key.to_string())),
-                false => Err(format!("invalid viz value: {}", key).into()),
+                true => Kind::Viz(key.to_string()),
+                false => Err(format!("invalid viz value: {}", key))?,
             }
         }
         "enum" => {
             if args.len() < 3 {
-                return Err("expected at least one enum variant".into());
+                return Err("expected at least one enum variant")?;
             }
 
             let mut variants = HashSet::with_capacity(args.len() - 2);
 
             for v in args.iter().skip(2).map(|s| s.to_string()) {
                 match ENUM_RX.is_match(&v) {
-                    true => variants.insert(v),
-                    false => return Err(format!("invalid enum value: {}", v).into()),
+                    true => variants.insert(v.to_lowercase()),
+                    false => return Err(format!("invalid enum value: {}", v))?,
                 };
             }
 
-            Ok(Enum(variants))
+            Enum(variants)
         }
-        _ => Err(format!("unknown type: {}", tt).into()),
-    }
+        _ => Err(format!("unknown type: {}", tt))?,
+    })
 }
+
+fn parse_bound(v: &str) -> Result<isize, Err> {
+    Ok(match v {
+        "MIN" => isize::MIN,
+        "MAX" => isize::MAX,
+        v => v.parse()?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    //#[ignore = "come back in around 20 years"]
+    #[ignore = "come back in around 20 years"]
     fn it_works() {
         let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
         let db = DB::new(buf.to_string()).unwrap();
         println!("{:?}", db);
-        todo!()
+        todo!();
     }
 
     #[test]
@@ -244,31 +317,47 @@ mod tests {
     }
 
     #[test]
-    fn parser_type_regex() {
+    fn parser_regex() {
         let db = DB::new("%type: Phone regexp /^[0-9]{10}$/".to_owned()).unwrap();
         let meta = db.types.get(&"Phone".to_owned()).unwrap();
 
-        if let Kind::Regexp(ref rx) = meta.kind {
-            assert!(rx.is_match("0123456789"));
-            assert!(!rx.is_match("blah"));
-            return;
-        }
-        panic!("unexpected type")
+        assert!(matches!(meta.kind, Kind::Regexp(_)));
+
+        assert!(parse_value(&meta.kind, &"0123456789".to_owned()).is_ok());
+        assert!(parse_value(&meta.kind, &"blah".to_owned()).is_err());
     }
 
     #[test]
-    fn parser_type_enum() {
+    fn parser_enum() {
         let db = DB::new("%type: Status enum Loading Done Error".to_owned()).unwrap();
         let meta = db.types.get(&"Status".to_owned()).unwrap();
 
         if let Kind::Enum(ref variants) = meta.kind {
             assert_eq!(variants.len(), 3);
-            assert!(variants.contains("Loading"));
-            assert!(variants.contains("Done"));
-            assert!(variants.contains("Error"));
-            return;
+            assert!(variants.contains("loading"));
+            assert!(variants.contains("done"));
+            assert!(variants.contains("error"));
+        } else {
+            panic!("unexpected type")
         }
-        panic!("unexpected type")
+
+        assert!(parse_value(&meta.kind, &"Done".to_owned()).is_ok());
+        assert!(parse_value(&meta.kind, &"blah".to_owned()).is_err());
+    }
+
+    #[test]
+    fn parser_range() {
+        let kind = parse_type(vec!["field", "range", "MIN", "MAX"]).unwrap();
+        assert!(matches!(kind, Kind::Range(isize::MIN, isize::MAX)));
+
+        let kind = parse_type(vec!["field", "range", "0", "15"]).unwrap();
+        assert!(matches!(kind, Kind::Range(0, 15)));
+
+        let kind = parse_type(vec!["field", "range", "15"]).unwrap();
+        assert!(matches!(kind, Kind::Range(0, 15)));
+
+        // Impossible range
+        assert!(parse_type(vec!["field", "range", "30", "15"]).is_err());
     }
 
     #[test]

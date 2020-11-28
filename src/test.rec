@@ -2,7 +2,6 @@
 %type: Name line
 %type: Login line
 %type: Email email
-%type: Password int
 %confidential: Password
 
 Name: Mr. Foo
