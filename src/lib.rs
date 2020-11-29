@@ -5,8 +5,11 @@
 #![allow(unreachable_code)]
 #![allow(unused_variables)]
 
+mod crypt;
+pub use crypt::{decrypt_field, encrypt_field, ENCRYPTED_PREFIX};
+
 mod lex;
-use crate::lex::{lex, Token};
+use lex::{lex, Token};
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -85,7 +88,7 @@ pub struct DB {
     doc: Option<String>,
     types: HashMap<Key, Meta>,
     records: Vec<Record>,
-    //
+    // todo refactor
     current_record: Option<Record>,
 }
 
@@ -140,6 +143,16 @@ impl DB {
                 let meta = self.types.entry(field_name).or_default();
                 meta.kind = kind;
             }
+            "confidential" => {
+                for field in value.split_whitespace() {
+                    let meta = self.types.entry(field.to_owned()).or_default();
+                    if !matches!(meta.kind, Kind::Line) {
+                        Err("confidential fields are always lines")?
+                    }
+                    meta.kind = Kind::Confidential;
+                }
+            }
+
             key => println!("unimplemented: {}", key),
         };
 
@@ -182,6 +195,12 @@ fn parse_value(kind: &Kind, val: &str) -> Result<Value, Err> {
             Email(val.to_owned())
         }
         Kind::UUID => UUID(val.parse()?),
+        Kind::Confidential => {
+            if !val.starts_with(crypt::ENCRYPTED_PREFIX) {
+                Err(format!("possibly unencrypted confidential value"))?
+            }
+            Confidential(val.to_owned())
+        }
         Kind::Range(min, max) => {
             let n = val.parse()?;
             if n < *min || n > *max {
@@ -202,7 +221,6 @@ fn parse_value(kind: &Kind, val: &str) -> Result<Value, Err> {
             }
             Enum(val.to_lowercase().to_owned())
         }
-        _ => unimplemented!("{:?}", kind),
     })
 }
 
@@ -358,6 +376,20 @@ mod tests {
 
         // Impossible range
         assert!(parse_type(vec!["field", "range", "30", "15"]).is_err());
+    }
+
+    #[test]
+    fn parser_confidential() {
+        let db = DB::new("%confidential: Password Token".to_owned()).unwrap();
+
+        assert!(matches!(db.types.get("Password").unwrap(), Meta { kind: Kind::Confidential, .. }));
+        assert!(matches!(db.types.get("Token").unwrap(), Meta { kind: Kind::Confidential, .. }));
+
+        assert!(matches!(
+            parse_value(&Kind::Confidential, "encrypted-AABBCC").unwrap(),
+            Value::Confidential(_)
+        ));
+        assert!(parse_value(&Kind::Confidential, "blah").is_err());
     }
 
     #[test]
