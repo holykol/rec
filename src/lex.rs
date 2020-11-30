@@ -7,7 +7,7 @@ pub(crate) enum Token {
     Blank,                   // Empty line
 }
 
-pub(crate) fn lex(s: String) -> Result<Vec<Token>, &'static str> {
+pub(crate) fn lex(s: &str) -> Result<Vec<Token>, &'static str> {
     let mut tokens: Vec<Token> = Vec::new();
 
     let lines: Vec<String> = s.lines().map(|s| s.to_string()).collect();
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn tokenizer_simple() {
         assert_eq!(
-            lex("%doc: My Books".to_owned()).unwrap(),
+            lex("%doc: My Books").unwrap(),
             vec![Keyword("doc".to_owned(), "My Books".to_owned())]
         );
     }
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn tokenizer_multiline() {
         assert_eq!(
-            lex("Field:\n+ Multi\n+ Line".to_owned()).unwrap(),
+            lex("Field:\n+ Multi\n+ Line").unwrap(),
             vec![Field("Field".to_owned(), "Multi\nLine".to_owned())]
         );
     }
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn tokenizer_blank() {
         assert_eq!(
-            lex("Field: 1\n\n\n\n\nField: 2".to_owned()).unwrap(),
+            lex("Field: 1\n\n\n\n\nField: 2").unwrap(),
             vec![
                 Field("Field".to_owned(), "1".to_owned()),
                 Blank,
