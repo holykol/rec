@@ -110,8 +110,9 @@ impl Sx {
         let mut nodes: Vec<Node> = tokens.iter().map(|t| Node::new(*t)).collect();
 
         // Fold expressions until there is only one node left
-        while let Some(i) = find_first(&nodes) {
-            parse_expr(&mut nodes, i)?;
+        while let Some(i) = find_first(&mut nodes) {
+            println!("{}: {:#?}", i, nodes);
+            fold_expr(&mut nodes, i)?;
         }
         assert!(nodes.len() == 1);
 
@@ -119,13 +120,14 @@ impl Sx {
     }
 }
 
-fn parse_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
+fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     let token = nodes[i].item;
 
-    println!("{:#?}", nodes);
-
     let next = nodes.remove(i + 1);
+    assert_eq!(matches!(next.item, Token::Paren(_)), false);
+
     let prev = nodes.remove(i - 1);
+    assert_eq!(matches!(prev.item, Token::Paren(_)), false);
 
     nodes[i - 1] = Node {
         item: token,
@@ -135,9 +137,13 @@ fn parse_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     Ok(())
 }
 
-fn find_first(tokens: &Vec<Node>) -> Option<usize> {
+/// returns index of first operation to execute
+fn find_first(tokens: &mut Vec<Node>) -> Option<usize> {
     let mut first_op = None;
     let mut idx = 0;
+
+    let mut parens = 0; // we are balancing parentheses here
+    let mut max_paren = (0, 0);
 
     for (i, node) in tokens.iter().enumerate() {
         if node.children.len() > 0 {
@@ -153,8 +159,30 @@ fn find_first(tokens: &Vec<Node>) -> Option<usize> {
                 first_op = Some(op);
                 idx = i;
             }
+            Token::Paren(closing) => {
+                if closing {
+                    parens -= 1
+                } else {
+                    parens += 1
+                };
+
+                if parens > max_paren.0 {
+                    max_paren = (parens, i);
+                }
+            }
             _ => continue,
         }
+    }
+
+    if parens != 0 {
+        panic!("unmatched number of parens: {:?}", parens)
+    }
+
+    if max_paren.0 > 0 {
+        tokens.remove(max_paren.1);
+        tokens.remove(max_paren.1 + 3);
+
+        idx = max_paren.1 + 1;
     }
 
     first_op.map(|_| idx)
@@ -250,7 +278,6 @@ mod tests {
 
     #[test]
     fn sexy_3() {
-        println!("{:?}", lex("(2 + 2) * 2").unwrap());
         assert_eq!(
             Sx::new("(2 + 2) * 2").unwrap().0,
             Node {
@@ -264,5 +291,12 @@ mod tests {
                 ]
             }
         )
+    }
+    #[test]
+    fn sexy_4() {
+        println!("{:#?}", Sx::new("(1 + 2) + (3 + 4)").unwrap());
+        println!("{:#?}", Sx::new("1 + (2 + (3 + 4))").unwrap());
+        //println!("{:#?}", Sx::new("1 + (2 + (3 + 4 + 5))").unwrap());
+        todo!("assertions");
     }
 }
