@@ -110,9 +110,9 @@ impl Sx {
         let mut nodes: Vec<Node> = tokens.iter().map(|t| Node::new(*t)).collect();
 
         // Fold expressions until there is only one node left
-        while let Some(i) = find_first(&mut nodes) {
-            println!("{}: {:#?}", i, nodes);
+        while let Some(i) = find_first(&nodes) {
             fold_expr(&mut nodes, i)?;
+            println!("{:#?}", nodes);
         }
         assert!(nodes.len() == 1);
 
@@ -124,21 +124,40 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     let token = nodes[i].item;
 
     let next = nodes.remove(i + 1);
-    assert_eq!(matches!(next.item, Token::Paren(_)), false);
+    assert!(!matches!(next.item, Token::Paren(_)), "next is paren");
 
     let prev = nodes.remove(i - 1);
-    assert_eq!(matches!(prev.item, Token::Paren(_)), false);
+    assert!(!matches!(prev.item, Token::Paren(_)), "prev is paren");
 
-    nodes[i - 1] = Node {
+    // elements have shifted by one
+    let i = i - 1;
+
+    nodes[i] = Node {
         item: token,
         children: vec![prev, next],
     };
+
+    if i == 0 {
+        return Ok(());
+    }
+
+    // remove parentheses around single expression
+    let before = nodes.get(i - 1).map(|n| n.item);
+    let after = nodes.get(i + 1).map(|n| n.item);
+
+    match before.zip(after) {
+        Some((Token::Paren(false), Token::Paren(true))) => {
+            nodes.remove(i + 1);
+            nodes.remove(i - 1);
+        }
+        _ => {}
+    }
 
     Ok(())
 }
 
 /// returns index of first operation to execute
-fn find_first(tokens: &mut Vec<Node>) -> Option<usize> {
+fn find_first(tokens: &Vec<Node>) -> Option<usize> {
     let mut first_op = None;
     let mut idx = 0;
 
@@ -179,10 +198,7 @@ fn find_first(tokens: &mut Vec<Node>) -> Option<usize> {
     }
 
     if max_paren.0 > 0 {
-        tokens.remove(max_paren.1);
-        tokens.remove(max_paren.1 + 3);
-
-        idx = max_paren.1 + 1;
+        idx = max_paren.1 + 2;
     }
 
     first_op.map(|_| idx)
