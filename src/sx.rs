@@ -1,7 +1,7 @@
-use super::Err;
+use super::{Err, Record};
 use std::cmp;
 
-// (1 + 1) > 1
+// (1 + 1) > 1 ✔
 // Age > 1
 // ((Email ~ "foomail\.com") || (Age <= 18)) && !#Fixed
 
@@ -59,10 +59,11 @@ impl Op {
 }
 
 impl cmp::PartialOrd for Op {
+    // operator precedence
+    // taken from Go spec :p
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         use Op::*;
 
-        // operator precedence
         fn ord(op: &Op) -> u8 {
             match op {
                 Mul | Div | Mod | Not => 5,
@@ -81,7 +82,7 @@ impl cmp::PartialOrd for Op {
 enum Token {
     Int(isize),
     Op(Op),
-    Paren(bool), // true if closing
+    Paren(bool), // true if opening
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -98,13 +99,81 @@ impl Node {
             children: Vec::new(),
         }
     }
+
+    fn eval(&self, rec: &Record) -> Result<Value, Err> {
+        use self::Op::*;
+        use self::Value::*;
+
+        // todo refactor
+        Ok(match self.item {
+            Token::Op(Mul) => {
+                let x = self.children[0].eval(rec)?.to_int()?;
+                let y = self.children[1].eval(rec)?.to_int()?;
+                Int(x * y)
+            }
+            Token::Op(Add) => {
+                let x = self.children[0].eval(rec)?.to_int()?;
+                let y = self.children[1].eval(rec)?.to_int()?;
+                Int(x + y)
+            }
+
+            Token::Op(Gt) => {
+                let x = self.children[0].eval(rec)?.to_int()?;
+                let y = self.children[1].eval(rec)?.to_int()?;
+                Bool(x > y)
+            }
+            Token::Op(Eq) => {
+                let x = self.children[0].eval(rec)?.to_int()?;
+                let y = self.children[1].eval(rec)?.to_int()?;
+                Bool(x == y)
+            }
+
+            Token::Op(Or) => {
+                let x = self.children[0].eval(rec)?.to_bool()?;
+                let y = self.children[1].eval(rec)?.to_bool()?;
+                Bool(x || y)
+            }
+            Token::Op(And) => {
+                let x = self.children[0].eval(rec)?.to_bool()?;
+                let y = self.children[1].eval(rec)?.to_bool()?;
+                Bool(x && y)
+            }
+
+            Token::Int(n) => Int(n),
+            token => todo!("eval: {:?}", token),
+        })
+    }
+}
+
+#[derive(Debug)]
+enum Value {
+    Int(isize),
+    Real(f64),
+    Str(String),
+    Bool(bool),
+}
+
+impl Value {
+    fn to_int(self) -> Result<isize, Err> {
+        match self {
+            Value::Int(i) => Ok(i),
+            _ => Err("to_int failed")?,
+        }
+    }
+
+    fn to_bool(self) -> Result<bool, Err> {
+        match self {
+            Value::Bool(b) => Ok(b),
+            _ => Err("to_bool failed")?,
+        }
+    }
 }
 
 #[derive(Debug)]
 struct Sx(Node);
 
 impl Sx {
-    fn new(e: &str) -> Result<Self, Err> {
+    pub fn new(e: &str) -> Result<Self, Err> {
         Self::parse(lex(e)?)
     }
 
@@ -117,7 +186,21 @@ impl Sx {
         }
         assert!(nodes.len() == 1);
 
-        Ok(Sx(nodes.remove(0)))
+        let root = nodes.remove(0);
+
+        if !matches!(root.item, Token::Op(_)) {
+            Err("root node is not op")?
+        }
+
+        Ok(Sx(root))
+    }
+
+    pub fn eval(&self, rec: &Record) -> Result<bool, Err> {
+        match self.0.eval(rec)? {
+            Value::Bool(b) => Ok(b),
+            Value::Int(n) => Ok(n != 0),
+            _ => Ok(false),
+        }
     }
 }
 
@@ -159,7 +242,6 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
 
 /// returns index of first operation to execute
 fn find_first(nodes: &[Node]) -> Option<usize> {
-    println!("finding first for {:#?}\n\n", nodes);
     let mut first_op = None;
     let mut idx = 0;
 
@@ -216,7 +298,6 @@ fn find_first(nodes: &[Node]) -> Option<usize> {
 }
 
 fn find_closing_paren(nodes: &[Node]) -> Option<usize> {
-    println!("finding closing parens for: {:#?}", nodes);
     let mut parens = 0;
     for (i, node) in nodes.iter().enumerate() {
         match node.item {
@@ -236,7 +317,16 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
     while let Some(c) = it.peek() {
         match c {
             '*' | '/' | '%' | '!' | '+' | '-' | '=' | '>' | '<' | '&' | '|' => {
-                let op = Op::from(it.next().unwrap(), *it.peek().unwrap_or(&' '));
+                let cur = it.next().unwrap();
+                let next = it.peek().unwrap_or(&' ');
+
+                let op = Op::from(cur, *next);
+
+                // skip one more char if operator had 2 symbols
+                if matches!(next, '=' | '&' | '|') {
+                    it.next();
+                }
+
                 tokens.push(Token::Op(op));
             }
 
@@ -279,65 +369,23 @@ fn parse_num<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>) -> isize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
-    fn sexy_basic() {
-        assert_eq!(
-            Sx::new("33 > 22").unwrap().0,
-            Node {
-                item: Token::Op(Op::Gt),
-                children: vec![
-                    Node {
-                        item: Token::Int(33),
-                        children: Vec::new(),
-                    },
-                    Node {
-                        item: Token::Int(22),
-                        children: Vec::new(),
-                    }
-                ]
-            }
-        )
+    fn sexy() {
+        expect("33 > 22");
+        expect("2 + 2 * 2 = 6");
+        expect("(2 + 2) * 2 = 8");
+        expect("(1 + 2) * (3 + 4) = 21");
+        expect("(1 + 1 = 1) || (2 + 2 = 4)");
     }
 
-    #[test]
-    fn sexy_precedence() {
-        assert_eq!(
-            Sx::new("2 + 2 * 2").unwrap().0,
-            Node {
-                item: Token::Op(Op::Add),
-                children: vec![
-                    Node::new(Token::Int(2)),
-                    Node {
-                        item: Token::Op(Op::Mul),
-                        children: vec![Node::new(Token::Int(2)), Node::new(Token::Int(2)),],
-                    }
-                ]
-            }
-        )
-    }
+    fn expect(s: &str) {
+        let sx = Sx::new(s).expect("parse");
+        let empty = HashMap::new(); // Can't read fields yet
 
-    #[test]
-    fn sexy_braces() {
-        assert_eq!(
-            Sx::new("(2 + 2) * 2").unwrap().0,
-            Node {
-                item: Token::Op(Op::Mul),
-                children: vec![
-                    Node {
-                        item: Token::Op(Op::Add),
-                        children: vec![Node::new(Token::Int(2)), Node::new(Token::Int(2)),],
-                    },
-                    Node::new(Token::Int(2)),
-                ]
-            }
-        )
-    }
-    #[test]
-    fn sexy_complex() {
-        println!("{:#?}", Sx::new("(1 + 2) + (3 + 4)").unwrap());
-        println!("{:#?}", Sx::new("1 + (2 + (3 + 4))").unwrap());
-        println!("{:#?}", Sx::new("1 + (2 + (3 + 4 + 5))").unwrap());
-        //todo!("assertions");
+        if !sx.eval(&empty).expect("eval") {
+            panic!("{} evaluated to false. \nast: {:#?}", s, sx.0)
+        };
     }
 }
