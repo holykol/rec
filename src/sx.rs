@@ -1,7 +1,9 @@
 use super::Err;
-use std::cmp; // ((Email ~ "foomail\.com") || (Age <= 18)) && !#Fixed
-              // Age > 1
-              // (1 + 1) > 1
+use std::cmp;
+
+// (1 + 1) > 1
+// Age > 1
+// ((Email ~ "foomail\.com") || (Age <= 18)) && !#Fixed
 
 #[derive(Debug, PartialEq, Eq, Ord, Copy, Clone)]
 enum Op {
@@ -112,7 +114,6 @@ impl Sx {
         // Fold expressions until there is only one node left
         while let Some(i) = find_first(&nodes) {
             fold_expr(&mut nodes, i)?;
-            println!("{:#?}", nodes);
         }
         assert!(nodes.len() == 1);
 
@@ -146,7 +147,7 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     let after = nodes.get(i + 1).map(|n| n.item);
 
     match before.zip(after) {
-        Some((Token::Paren(false), Token::Paren(true))) => {
+        Some((Token::Paren(true), Token::Paren(false))) => {
             nodes.remove(i + 1);
             nodes.remove(i - 1);
         }
@@ -157,14 +158,21 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
 }
 
 /// returns index of first operation to execute
-fn find_first(tokens: &Vec<Node>) -> Option<usize> {
+fn find_first(nodes: &[Node]) -> Option<usize> {
+    println!("finding first for {:#?}\n\n", nodes);
     let mut first_op = None;
     let mut idx = 0;
 
-    let mut parens = 0; // we are balancing parentheses here
-    let mut max_paren = (0, 0);
+    let mut parens: isize = 0; // we are balancing parentheses here
 
-    for (i, node) in tokens.iter().enumerate() {
+    struct Paren {
+        lvl: usize,
+        idx: usize,
+    };
+
+    let mut max_paren = Paren { lvl: 0, idx: 0 };
+
+    for (i, node) in nodes.iter().enumerate() {
         if node.children.len() > 0 {
             continue;
         }
@@ -178,15 +186,12 @@ fn find_first(tokens: &Vec<Node>) -> Option<usize> {
                 first_op = Some(op);
                 idx = i;
             }
-            Token::Paren(closing) => {
-                if closing {
-                    parens -= 1
-                } else {
-                    parens += 1
-                };
+            Token::Paren(opening) => {
+                parens += if opening { 1 } else { -1 };
 
-                if parens > max_paren.0 {
-                    max_paren = (parens, i);
+                if parens as usize > max_paren.lvl {
+                    max_paren.lvl = parens as usize;
+                    max_paren.idx = i;
                 }
             }
             _ => continue,
@@ -197,11 +202,31 @@ fn find_first(tokens: &Vec<Node>) -> Option<usize> {
         panic!("unmatched number of parens: {:?}", parens)
     }
 
-    if max_paren.0 > 0 {
-        idx = max_paren.1 + 2;
+    // parens override evaluation order
+    if max_paren.lvl > 0 {
+        let closing_pos = find_closing_paren(&nodes[max_paren.idx..]).unwrap();
+
+        let start = max_paren.idx + 1;
+        let end = start + closing_pos - 1;
+
+        idx = start + find_first(&nodes[start..end]).unwrap();
     }
 
     first_op.map(|_| idx)
+}
+
+fn find_closing_paren(nodes: &[Node]) -> Option<usize> {
+    println!("finding closing parens for: {:#?}", nodes);
+    let mut parens = 0;
+    for (i, node) in nodes.iter().enumerate() {
+        match node.item {
+            Token::Paren(true) => parens += 1,
+            Token::Paren(false) if parens - 1 == 0 => return Some(i),
+            Token::Paren(false) => parens -= 1,
+            _ => continue,
+        }
+    }
+    None
 }
 
 fn lex(e: &str) -> Result<Vec<Token>, Err> {
@@ -220,11 +245,11 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
                 tokens.push(Token::Int(n));
             }
             '(' => {
-                tokens.push(Token::Paren(false));
+                tokens.push(Token::Paren(true));
                 it.next();
             }
             ')' => {
-                tokens.push(Token::Paren(true));
+                tokens.push(Token::Paren(false));
                 it.next();
             }
             ' ' => {
@@ -256,7 +281,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sexy() {
+    fn sexy_basic() {
         assert_eq!(
             Sx::new("33 > 22").unwrap().0,
             Node {
@@ -276,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn sexy_2() {
+    fn sexy_precedence() {
         assert_eq!(
             Sx::new("2 + 2 * 2").unwrap().0,
             Node {
@@ -293,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn sexy_3() {
+    fn sexy_braces() {
         assert_eq!(
             Sx::new("(2 + 2) * 2").unwrap().0,
             Node {
@@ -309,10 +334,10 @@ mod tests {
         )
     }
     #[test]
-    fn sexy_4() {
+    fn sexy_complex() {
         println!("{:#?}", Sx::new("(1 + 2) + (3 + 4)").unwrap());
         println!("{:#?}", Sx::new("1 + (2 + (3 + 4))").unwrap());
-        //println!("{:#?}", Sx::new("1 + (2 + (3 + 4 + 5))").unwrap());
-        todo!("assertions");
+        println!("{:#?}", Sx::new("1 + (2 + (3 + 4 + 5))").unwrap());
+        //todo!("assertions");
     }
 }
