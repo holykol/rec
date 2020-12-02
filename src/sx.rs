@@ -1,5 +1,6 @@
 use super::{Err, Record};
 use std::cmp;
+use std::convert::{TryFrom, TryInto};
 
 // (1 + 1) > 1 ✔
 // Age > 1
@@ -58,6 +59,10 @@ impl Op {
     }
 }
 
+trait Operation<T: Sized> {
+    fn op(op: Op, x: Self, x: Self) -> Self;
+}
+
 impl cmp::PartialOrd for Op {
     // operator precedence
     // taken from Go spec :p
@@ -101,47 +106,88 @@ impl Node {
     }
 
     fn eval(&self, rec: &Record) -> Result<Value, Err> {
-        use self::Op::*;
         use self::Value::*;
 
-        // todo refactor
         Ok(match self.item {
-            Token::Op(Mul) => {
-                let x = self.children[0].eval(rec)?.to_int()?;
-                let y = self.children[1].eval(rec)?.to_int()?;
-                Int(x * y)
-            }
-            Token::Op(Add) => {
-                let x = self.children[0].eval(rec)?.to_int()?;
-                let y = self.children[1].eval(rec)?.to_int()?;
-                Int(x + y)
-            }
-
-            Token::Op(Gt) => {
-                let x = self.children[0].eval(rec)?.to_int()?;
-                let y = self.children[1].eval(rec)?.to_int()?;
-                Bool(x > y)
-            }
-            Token::Op(Eq) => {
-                let x = self.children[0].eval(rec)?.to_int()?;
-                let y = self.children[1].eval(rec)?.to_int()?;
-                Bool(x == y)
-            }
-
-            Token::Op(Or) => {
-                let x = self.children[0].eval(rec)?.to_bool()?;
-                let y = self.children[1].eval(rec)?.to_bool()?;
-                Bool(x || y)
-            }
-            Token::Op(And) => {
-                let x = self.children[0].eval(rec)?.to_bool()?;
-                let y = self.children[1].eval(rec)?.to_bool()?;
-                Bool(x && y)
-            }
-
             Token::Int(n) => Int(n),
+            Token::Op(op) => {
+                let x = self
+                    .children
+                    .get(0)
+                    .ok_or("expected at least one children")?
+                    .eval(rec)?;
+
+                match x {
+                    Value::Int(x) => {
+                        let y = self.children[1].eval(rec)?.try_into()?;
+                        op_int(op, x, y)
+                    }
+                    Value::Bool(x) => {
+                        let y = match self.children.get(1) {
+                            Some(node) => node.eval(rec)?.try_into()?,
+                            None => false,
+                        };
+                        op_bool(op, x, y)
+                    }
+                    _ => todo!(),
+                }
+            }
+
             token => todo!("eval: {:?}", token),
         })
+    }
+}
+
+// Who needs generics?
+fn op_int(op: Op, x: isize, y: isize) -> Value {
+    use Op::*;
+    use Value::*;
+
+    match op {
+        Mul => Int(x * y),
+        Div => Int(x / y),
+        Add => Int(x + y),
+        Sub => Int(x - y),
+        Mod => Int(x % y),
+        Eq => Bool(x == y),
+        Ne => Bool(x != y),
+        Gt => Bool(x > y),
+        Ge => Bool(x >= y),
+        Lt => Bool(x < y),
+        Le => Bool(x <= y),
+        _ => unreachable!("tried to perform {:?} on int value", op),
+    }
+}
+
+fn op_real(op: Op, x: f64, y: f64) -> Value {
+    use Op::*;
+    use Value::*;
+
+    match op {
+        Mul => Real(x * y),
+        Div => Real(x / y),
+        Add => Real(x + y),
+        Sub => Real(x - y),
+        Mod => Real(x % y),
+        Eq => Bool(x == y),
+        Ne => Bool(x != y),
+        Gt => Bool(x > y),
+        Ge => Bool(x >= y),
+        Lt => Bool(x < y),
+        Le => Bool(x <= y),
+        _ => unreachable!("tried to perform {:?} on real value", op),
+    }
+}
+
+fn op_bool(op: Op, x: bool, y: bool) -> Value {
+    use Op::*;
+    use Value::*;
+
+    match op {
+        Or => Bool(x || y),
+        And => Bool(x && y),
+        Not => Bool(!x),
+        _ => unreachable!("tried to perform {:?} on bool value", op),
     }
 }
 
@@ -153,18 +199,35 @@ enum Value {
     Bool(bool),
 }
 
-impl Value {
-    fn to_int(self) -> Result<isize, Err> {
-        match self {
+impl TryFrom<Value> for isize {
+    type Error = Err;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
             Value::Int(i) => Ok(i),
-            _ => Err("to_int failed")?,
+            _ => Err("expected int")?,
         }
     }
+}
 
-    fn to_bool(self) -> Result<bool, Err> {
-        match self {
+impl TryFrom<Value> for f64 {
+    type Error = Err;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Real(i) => Ok(i),
+            _ => Err("expected f64")?,
+        }
+    }
+}
+
+impl TryFrom<Value> for bool {
+    type Error = Err;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
             Value::Bool(b) => Ok(b),
-            _ => Err("to_bool failed")?,
+            _ => Err("expected bool")?,
         }
     }
 }
@@ -205,21 +268,22 @@ impl Sx {
 }
 
 fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
-    let token = nodes[i].item;
+    let mut i = i;
+    let mut children = Vec::with_capacity(2);
 
-    let next = nodes.remove(i + 1);
-    assert!(!matches!(next.item, Token::Paren(_)), "next is paren");
+    match nodes[i].item {
+        // Not op only has one child
+        Token::Op(Op::Not) => {
+            children.push(nodes.remove(i + 1));
+        }
+        _ => {
+            children.push(nodes.remove(i - 1));
+            children.push(nodes.remove(i));
+            i = i - 1;
+        }
+    }
 
-    let prev = nodes.remove(i - 1);
-    assert!(!matches!(prev.item, Token::Paren(_)), "prev is paren");
-
-    // elements have shifted by one
-    let i = i - 1;
-
-    nodes[i] = Node {
-        item: token,
-        children: vec![prev, next],
-    };
+    nodes[i].children = children;
 
     if i == 0 {
         return Ok(());
@@ -334,12 +398,8 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
                 let n = parse_num(&mut it);
                 tokens.push(Token::Int(n));
             }
-            '(' => {
-                tokens.push(Token::Paren(true));
-                it.next();
-            }
-            ')' => {
-                tokens.push(Token::Paren(false));
+            '(' | ')' => {
+                tokens.push(Token::Paren(c == &'('));
                 it.next();
             }
             ' ' => {
@@ -377,7 +437,10 @@ mod tests {
         expect("2 + 2 * 2 = 6");
         expect("(2 + 2) * 2 = 8");
         expect("(1 + 2) * (3 + 4) = 21");
-        expect("(1 + 1 = 1) || (2 + 2 = 4)");
+        expect("(1 + 1 < 1) || (2 + 2 >= 4)");
+        expect("(1 + 1 <= 2) && (2 + 2 > 2)");
+        expect("!(2 = 1)");
+        expect("!(1 = 1 && 1 = 2)");
     }
 
     fn expect(s: &str) {
