@@ -88,6 +88,8 @@ impl cmp::PartialOrd for Op {
 enum Token {
     Int(isize),
     Str(String),
+    Field(String, usize),
+    Count(String),
     Op(Op),
     Paren(bool), // true if opening
 }
@@ -109,10 +111,28 @@ impl Node {
 
     fn eval(&self, rec: &Record) -> Result<Value, Err> {
         use self::Value::*;
+        use super::Value as RecValue;
 
         Ok(match &self.item {
             Token::Int(n) => Int(*n),
             Token::Str(s) => Str(s.clone()),
+
+            Token::Field(field, _i) => {
+                let value = rec
+                    .get(field)
+                    .ok_or(format!("expected field {} to be present", field))?;
+
+                match value {
+                    RecValue::Line(s) => Str(s.clone()),
+                    RecValue::Int(n) => Int(*n),
+                    _ => todo!(),
+                }
+            }
+            Token::Count(field) => match rec.get(field) {
+                Some(_) => Int(1),
+                None => Int(0),
+            },
+
             Token::Op(op) => {
                 let x = self
                     .children
@@ -420,6 +440,18 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
                 let n = parse_num(&mut it);
                 tokens.push(Token::Int(n));
             }
+            '#' => {
+                it.next();
+
+                let (field, idx) = parse_field(&mut it);
+                assert!(idx.is_none());
+
+                tokens.push(Token::Count(field));
+            }
+            'A'..='Z' | 'a'..='z' => {
+                let (field, idx) = parse_field(&mut it);
+                tokens.push(Token::Field(field, idx.unwrap_or(0)));
+            }
             '(' | ')' => {
                 tokens.push(Token::Paren(c == &'('));
                 it.next();
@@ -474,8 +506,32 @@ fn parse_string<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> String 
     result
 }
 
+fn parse_field<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> (String, Option<usize>) {
+    let mut result = String::new();
+    let mut idx = None;
+
+    while let Some(c) = it.peek() {
+        match c {
+            c if c.is_ascii_alphanumeric() || *c == '_' => {
+                result.push(*c);
+                it.next();
+            }
+            '[' => {
+                it.next();
+                idx = Some(parse_num(it) as usize);
+                assert_eq!(it.next().unwrap(), ']');
+                break;
+            }
+            _ => break,
+        }
+    }
+
+    (result, idx)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::Value;
     use super::*;
     use std::collections::HashMap;
 
@@ -486,7 +542,13 @@ mod tests {
 
             if !sx.eval(&empty).expect("eval") {
                 panic!("{} evaluated to false. \nast: {:#?}", $a, sx.0)
-            };
+            }
+        };
+        ($a:expr, $v:ident) => {
+            let sx = Sx::new($a).expect("parse");
+            if !sx.eval(&$v).expect("eval") {
+                panic!("{} evaluated to false. \nast: {:#?}", $a, sx.0)
+            }
         };
     }
 
@@ -509,6 +571,14 @@ mod tests {
         expect!("'foo' & 'bar' = 'foobar'");
         expect!("'bar' ~ 'b.r'");
         expect!("!('bus' ~ 'b.r')");
+
+        // working with records
+        let mut record: Record = HashMap::new();
+        record.insert("Email".to_owned(), Value::Line("foo@bar.com".to_owned()));
+        record.insert("Age".to_owned(), Value::Int(18));
+
+        expect!("Email = 'foo@bar.com'", record);
+        expect!("Age >= 18", record);
     }
 
     #[test]
