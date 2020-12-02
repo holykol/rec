@@ -1,6 +1,7 @@
 use super::{Err, Record};
-use std::cmp;
+use regex::Regex;
 use std::convert::{TryFrom, TryInto};
+use std::{cmp, iter};
 
 // (1 + 1) > 1 ✔
 // Age > 1
@@ -26,8 +27,9 @@ enum Op {
     //Before,
     //After,
     //Same,
+    Concat,
+    Match,
 
-    //Concat,
     And,
     Or,
 }
@@ -46,6 +48,7 @@ impl Op {
             ('=', _) => Eq,
             ('>', _) => Gt,
             ('<', _) => Lt,
+            ('&', _) => Concat,
 
             ('*', _) => Mul,
             ('/', _) => Div,
@@ -53,6 +56,7 @@ impl Op {
             ('!', _) => Not,
             ('+', _) => Add,
             ('-', _) => Sub,
+            ('~', _) => Match,
 
             _ => panic!("unknown operator: {}{}", c, s),
         }
@@ -71,6 +75,7 @@ impl cmp::PartialOrd for Op {
 
         fn ord(op: &Op) -> u8 {
             match op {
+                Concat | Match => 6,
                 Mul | Div | Mod | Not => 5,
                 Add | Sub => 4,
                 Eq | Ne | Gt | Ge | Lt | Le => 3,
@@ -83,9 +88,10 @@ impl cmp::PartialOrd for Op {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 enum Token {
     Int(isize),
+    Str(String),
     Op(Op),
     Paren(bool), // true if opening
 }
@@ -108,8 +114,9 @@ impl Node {
     fn eval(&self, rec: &Record) -> Result<Value, Err> {
         use self::Value::*;
 
-        Ok(match self.item {
-            Token::Int(n) => Int(n),
+        Ok(match &self.item {
+            Token::Int(n) => Int(*n),
+            Token::Str(s) => Str(s.clone()),
             Token::Op(op) => {
                 let x = self
                     .children
@@ -120,16 +127,20 @@ impl Node {
                 match x {
                     Value::Int(x) => {
                         let y = self.children[1].eval(rec)?.try_into()?;
-                        op_int(op, x, y)
+                        op_int(*op, x, y)
                     }
                     Value::Bool(x) => {
                         let y = match self.children.get(1) {
                             Some(node) => node.eval(rec)?.try_into()?,
                             None => false,
                         };
-                        op_bool(op, x, y)
+                        op_bool(*op, x, y)
                     }
-                    _ => todo!(),
+                    Value::Str(x) => {
+                        let y: String = self.children[1].eval(rec)?.try_into()?;
+                        op_str(*op, &x, &y)
+                    }
+                    _ => todo!("real"),
                 }
             }
 
@@ -191,12 +202,29 @@ fn op_bool(op: Op, x: bool, y: bool) -> Value {
     }
 }
 
+fn op_str(op: Op, x: &str, y: &str) -> Value {
+    use Op::*;
+    use Value::*;
+
+    match op {
+        Eq => Bool(x == y),
+        Ne => Bool(x != y),
+        Concat => Str([x, y].concat().to_owned()),
+        Match => {
+            // TODO compiled regex cache
+            let rx = Regex::new(y).expect("compile regexp");
+            Bool(rx.is_match(x))
+        }
+        _ => unreachable!("tried to perform {:?} on str value", op),
+    }
+}
+
 #[derive(Debug)]
 enum Value {
     Int(isize),
     Real(f64),
-    Str(String),
     Bool(bool),
+    Str(String),
 }
 
 impl TryFrom<Value> for isize {
@@ -205,6 +233,7 @@ impl TryFrom<Value> for isize {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Int(i) => Ok(i),
+            Value::Str(s) => Ok(s.parse().map_err(|_| "failed to convert string to int")?),
             _ => Err("expected int")?,
         }
     }
@@ -232,6 +261,17 @@ impl TryFrom<Value> for bool {
     }
 }
 
+impl TryFrom<Value> for String {
+    type Error = Err;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Str(s) => Ok(s.clone()),
+            _ => Err("expected string")?,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Sx(Node);
 
@@ -241,7 +281,7 @@ impl Sx {
     }
 
     fn parse(tokens: Vec<Token>) -> Result<Self, Err> {
-        let mut nodes: Vec<Node> = tokens.iter().map(|t| Node::new(*t)).collect();
+        let mut nodes: Vec<Node> = tokens.iter().map(|t| Node::new(t.clone())).collect();
 
         // Fold expressions until there is only one node left
         while let Some(i) = find_first(&nodes) {
@@ -290,8 +330,8 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     }
 
     // remove parentheses around single expression
-    let before = nodes.get(i - 1).map(|n| n.item);
-    let after = nodes.get(i + 1).map(|n| n.item);
+    let before = nodes.get(i - 1).map(|n| n.item.clone());
+    let after = nodes.get(i + 1).map(|n| n.item.clone());
 
     match before.zip(after) {
         Some((Token::Paren(true), Token::Paren(false))) => {
@@ -380,7 +420,7 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
 
     while let Some(c) = it.peek() {
         match c {
-            '*' | '/' | '%' | '!' | '+' | '-' | '=' | '>' | '<' | '&' | '|' => {
+            '*' | '/' | '%' | '!' | '+' | '-' | '=' | '>' | '<' | '&' | '|' | '~' => {
                 let cur = it.next().unwrap();
                 let next = it.peek().unwrap_or(&' ');
 
@@ -402,6 +442,10 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
                 tokens.push(Token::Paren(c == &'('));
                 it.next();
             }
+            '\'' | '"' => {
+                let s = parse_string(&mut it);
+                tokens.push(Token::Str(s))
+            }
             ' ' => {
                 it.next();
             }
@@ -412,7 +456,7 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
     Ok(tokens)
 }
 
-fn parse_num<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>) -> isize {
+fn parse_num<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> isize {
     let mut n = 0;
 
     while let Some(c) = it.peek() {
@@ -426,6 +470,28 @@ fn parse_num<I: Iterator<Item = char>>(it: &mut std::iter::Peekable<I>) -> isize
     n as isize
 }
 
+fn parse_string<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> String {
+    let quote = it.next().unwrap();
+    debug_assert!(quote == '\'' || quote == '"');
+
+    let mut result = String::new();
+
+    while let Some(c) = it.next() {
+        match c {
+            '\\' if it.peek().unwrap_or(&' ') == &quote => {
+                // ignore escaped quotes
+                result.push(it.next().unwrap());
+            }
+            _ if c == quote => {
+                break;
+            }
+            c => result.push(c),
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,7 +499,9 @@ mod tests {
 
     #[test]
     fn sexy() {
+        // some basic stuff
         expect("33 > 22");
+        expect("13 < '37'");
         expect("2 + 2 * 2 = 6");
         expect("(2 + 2) * 2 = 8");
         expect("(1 + 2) * (3 + 4) = 21");
@@ -441,6 +509,13 @@ mod tests {
         expect("(1 + 1 <= 2) && (2 + 2 > 2)");
         expect("!(2 = 1)");
         expect("!(1 = 1 && 1 = 2)");
+
+        // strings
+        expect("'foo' = 'foo'");
+        expect("'bar' != 'baz'");
+        expect("'foo' & 'bar' = 'foobar'");
+        expect("'bar' ~ 'b.r'");
+        expect("!('bus' ~ 'b.r')");
     }
 
     fn expect(s: &str) {
@@ -450,5 +525,14 @@ mod tests {
         if !sx.eval(&empty).expect("eval") {
             panic!("{} evaluated to false. \nast: {:#?}", s, sx.0)
         };
+    }
+
+    #[test]
+    fn parse_str() {
+        let mut it = "'hello \\'mom'".chars().peekable();
+        assert_eq!("hello 'mom", parse_string(&mut it));
+
+        let mut it = "\"this also\nworks\"".chars().peekable();
+        assert_eq!("this also\nworks", parse_string(&mut it));
     }
 }
