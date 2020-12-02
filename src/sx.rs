@@ -63,10 +63,6 @@ impl Op {
     }
 }
 
-trait Operation<T: Sized> {
-    fn op(op: Op, x: Self, x: Self) -> Self;
-}
-
 impl cmp::PartialOrd for Op {
     // operator precedence
     // taken from Go spec :p
@@ -149,46 +145,32 @@ impl Node {
     }
 }
 
-// Who needs generics?
-fn op_int(op: Op, x: isize, y: isize) -> Value {
-    use Op::*;
-    use Value::*;
+macro_rules! num_op {
+    ($name:literal, $func:ident, $arg:ident, $rt:ident) => {
+        fn $func(op: Op, x: $arg, y: $arg) -> Value {
+            use Op::*;
+            use Value::*;
 
-    match op {
-        Mul => Int(x * y),
-        Div => Int(x / y),
-        Add => Int(x + y),
-        Sub => Int(x - y),
-        Mod => Int(x % y),
-        Eq => Bool(x == y),
-        Ne => Bool(x != y),
-        Gt => Bool(x > y),
-        Ge => Bool(x >= y),
-        Lt => Bool(x < y),
-        Le => Bool(x <= y),
-        _ => unreachable!("tried to perform {:?} on int value", op),
-    }
+            match op {
+                Mul => $rt(x * y),
+                Div => $rt(x / y),
+                Add => $rt(x + y),
+                Sub => $rt(x - y),
+                Mod => $rt(x % y),
+                Eq => Bool(x == y),
+                Ne => Bool(x != y),
+                Gt => Bool(x > y),
+                Ge => Bool(x >= y),
+                Lt => Bool(x < y),
+                Le => Bool(x <= y),
+                _ => unreachable!("tried to perform {:?} on {} value", op, $name),
+            }
+        }
+    };
 }
 
-fn op_real(op: Op, x: f64, y: f64) -> Value {
-    use Op::*;
-    use Value::*;
-
-    match op {
-        Mul => Real(x * y),
-        Div => Real(x / y),
-        Add => Real(x + y),
-        Sub => Real(x - y),
-        Mod => Real(x % y),
-        Eq => Bool(x == y),
-        Ne => Bool(x != y),
-        Gt => Bool(x > y),
-        Ge => Bool(x >= y),
-        Lt => Bool(x < y),
-        Le => Bool(x <= y),
-        _ => unreachable!("tried to perform {:?} on real value", op),
-    }
-}
+num_op! {"int", op_int, isize, Int}
+num_op! {"real", op_real, f64, Real}
 
 fn op_bool(op: Op, x: bool, y: bool) -> Value {
     use Op::*;
@@ -497,34 +479,36 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    macro_rules! expect {
+        ($a:expr) => {
+            let sx = Sx::new($a).expect("parse");
+            let empty = HashMap::new();
+
+            if !sx.eval(&empty).expect("eval") {
+                panic!("{} evaluated to false. \nast: {:#?}", $a, sx.0)
+            };
+        };
+    }
+
     #[test]
     fn sexy() {
         // some basic stuff
-        expect("33 > 22");
-        expect("13 < '37'");
-        expect("2 + 2 * 2 = 6");
-        expect("(2 + 2) * 2 = 8");
-        expect("(1 + 2) * (3 + 4) = 21");
-        expect("(1 + 1 < 1) || (2 + 2 >= 4)");
-        expect("(1 + 1 <= 2) && (2 + 2 > 2)");
-        expect("!(2 = 1)");
-        expect("!(1 = 1 && 1 = 2)");
+        expect!("33 > 22");
+        expect!("13 < '37'");
+        expect!("2 + 2 * 2 = 6");
+        expect!("(2 + 2) * 2 = 8");
+        expect!("(1 + 2) * (3 + 4) = 21");
+        expect!("(1 + 1 < 1) || (2 + 2 >= 4)");
+        expect!("(1 + 1 <= 2) && (2 + 2 > 2)");
+        expect!("!(2 = 1)");
+        expect!("!(1 = 1 && 1 = 2)");
 
         // strings
-        expect("'foo' = 'foo'");
-        expect("'bar' != 'baz'");
-        expect("'foo' & 'bar' = 'foobar'");
-        expect("'bar' ~ 'b.r'");
-        expect("!('bus' ~ 'b.r')");
-    }
-
-    fn expect(s: &str) {
-        let sx = Sx::new(s).expect("parse");
-        let empty = HashMap::new(); // Can't read fields yet
-
-        if !sx.eval(&empty).expect("eval") {
-            panic!("{} evaluated to false. \nast: {:#?}", s, sx.0)
-        };
+        expect!("'foo' = 'foo'");
+        expect!("'bar' != 'baz'");
+        expect!("'foo' & 'bar' = 'foobar'");
+        expect!("'bar' ~ 'b.r'");
+        expect!("!('bus' ~ 'b.r')");
     }
 
     #[test]
