@@ -1,6 +1,7 @@
 use super::{Err, Record};
 use regex::Regex;
 use std::convert::{TryFrom, TryInto};
+use std::str::FromStr;
 use std::{cmp, iter};
 
 // (1 + 1) > 1 ✔
@@ -474,26 +475,30 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
 
 fn parse_num<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> Result<Token, Err> {
     let mut buf = String::new();
-    let mut seen_dot = false;
 
     while let Some(c) = it.peek() {
-        if c == &'.' {
-            seen_dot = true;
+        if c.is_digit(16) || *c == '-' || *c == '.' || *c == 'x' {
             buf.push(it.next().unwrap());
-            continue;
-        }
-
-        if !c.is_digit(10) {
+        } else {
             break;
         }
-
-        buf.push(it.next().unwrap());
     }
 
-    match seen_dot {
-        true => Ok(Token::Real(buf.parse()?)),
-        false => Ok(Token::Int(buf.parse()?)),
+    let mut radix = 10;
+
+    if (buf.len() > 1 && buf.starts_with("0")) || (buf.len() > 2 && buf.starts_with("-0")) {
+        radix = 8;
     }
+
+    if buf.starts_with("0x") || buf.starts_with("-0x") {
+        radix = 16;
+        buf = buf.replacen("0x", "", 1);
+    }
+
+    Ok(match buf.contains('.') {
+        true => Token::Real(f64::from_str(&buf)?),
+        false => Token::Int(isize::from_str_radix(&buf, radix)?),
+    })
 }
 
 fn parse_string<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> String {
@@ -576,8 +581,8 @@ mod tests {
         expect!("(1 + 2) * (3 + 4) = 21");
         expect!("(1 + 1 < 1) || (2 + 2 >= 4)");
         expect!("(1 + 1 <= 2) && (2 + 2 > 2)");
-        expect!("!(2 = 1)");
-        expect!("!(1 = 1 && 1 = 2)");
+        expect!("!(0x1 = 0x2)");
+        expect!("0xFF = 255");
 
         // strings
         expect!("'foo' = 'foo'");
@@ -596,6 +601,24 @@ mod tests {
 
         expect!("Email = 'foo@bar.com'", record);
         expect!("Age >= 18", record);
+        expect!("#Email = 1", record);
+    }
+
+    #[test]
+    fn parse_number() {
+        fn parse(s: &str) -> Token {
+            parse_num(&mut s.chars().peekable()).unwrap()
+        }
+
+        assert_eq!(Token::Int(10000), parse("10000"));
+        assert_eq!(Token::Int(0), parse("0"));
+        assert_eq!(Token::Int(255), parse("0xFF"));
+        assert_eq!(Token::Int(-10), parse("-0xa"));
+        assert_eq!(Token::Int(10), parse("012"));
+        assert_eq!(Token::Int(-7), parse("-07"));
+        assert_eq!(Token::Int(-1337), parse("-1337"));
+        assert_eq!(Token::Real(0.12), parse(".12"));
+        assert_eq!(Token::Real(-3.14), parse("-3.14"));
     }
 
     #[test]
