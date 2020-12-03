@@ -34,6 +34,30 @@ enum Op {
     Or,
 }
 
+macro_rules! num_ops {
+    ($name:literal, $func:ident, $arg:ident, $rt:ident, $eq:expr) => {
+        fn $func(&self, x: $arg, y: $arg) -> Value {
+            use Op::*;
+            use Value::*;
+
+            match self {
+                Mul => $rt(x * y),
+                Div => $rt(x / y),
+                Add => $rt(x + y),
+                Sub => $rt(x - y),
+                Mod => $rt(x % y),
+                Eq => Bool($eq(x, y)),
+                Ne => Bool(!$eq(x, y)),
+                Gt => Bool(x > y),
+                Ge => Bool(x >= y),
+                Lt => Bool(x < y),
+                Le => Bool(x <= y),
+                _ => unreachable!("tried to perform {:?} on {} value", self, $name),
+            }
+        }
+    };
+}
+
 impl Op {
     fn from(c: char, s: char) -> Self {
         use Op::*;
@@ -59,6 +83,66 @@ impl Op {
             ('~', _) => Match,
 
             _ => panic!("unknown operator: {}{}", c, s),
+        }
+    }
+
+    fn eval(&self, rec: &Record, children: &Vec<Node>) -> Result<Value, Err> {
+        let x = children
+            .get(0)
+            .ok_or("expected at least one children")?
+            .eval(rec)?;
+
+        Ok(match x {
+            Value::Int(x) => {
+                let y = children[1].eval(rec)?.try_into()?;
+                Self::op_int(self, x, y)
+            }
+            Value::Real(x) => {
+                let y = children[1].eval(rec)?.try_into()?;
+                Self::op_real(self, x, y)
+            }
+            Value::Bool(x) => {
+                let y = match children.get(1) {
+                    Some(node) => node.eval(rec)?.try_into()?,
+                    None => false,
+                };
+                Self::op_bool(self, x, y)
+            }
+            Value::Str(x) => {
+                let y: String = children[1].eval(rec)?.try_into()?;
+                Self::op_str(self, &x, &y)
+            }
+        })
+    }
+
+    num_ops! {"int", op_int, isize, Int,  |x, y| x == y}
+    num_ops! {"real", op_real, f64, Real, |x: f64, y: f64| (x - y).abs() < f64::EPSILON }
+
+    fn op_bool(&self, x: bool, y: bool) -> Value {
+        use Op::*;
+        use Value::*;
+        match self {
+            Or => Bool(x || y),
+            And => Bool(x && y),
+            Not => Bool(!x),
+            _ => unreachable!("tried to perform {:?} on bool value", self),
+        }
+    }
+
+    fn op_str(&self, x: &str, y: &str) -> Value {
+        use Op::*;
+        use Value::*;
+
+        match self {
+            Eq => Bool(x == y),
+            Ne => Bool(x != y),
+            Concat => Str([x, y].concat()),
+            Match => {
+                // TODO compiled regex cache
+                let rx = Regex::new(y).expect("compile regexp");
+                Bool(rx.is_match(x))
+            }
+            _ => unreachable!("tried to perform {:?} on str value", self),
         }
     }
 }
@@ -87,6 +171,7 @@ impl cmp::PartialOrd for Op {
 #[derive(Debug, PartialEq, Clone)]
 enum Token {
     Int(isize),
+    Real(f64),
     Str(String),
     Field(String, usize),
     Count(String),
@@ -115,6 +200,7 @@ impl Node {
 
         Ok(match &self.item {
             Token::Int(n) => Int(*n),
+            Token::Real(n) => Real(*n),
             Token::Str(s) => Str(s.clone()),
 
             Token::Field(field, _i) => {
@@ -133,91 +219,10 @@ impl Node {
                 None => Int(0),
             },
 
-            Token::Op(op) => {
-                let x = self
-                    .children
-                    .get(0)
-                    .ok_or("expected at least one children")?
-                    .eval(rec)?;
-
-                match x {
-                    Value::Int(x) => {
-                        let y = self.children[1].eval(rec)?.try_into()?;
-                        op_int(*op, x, y)
-                    }
-                    Value::Bool(x) => {
-                        let y = match self.children.get(1) {
-                            Some(node) => node.eval(rec)?.try_into()?,
-                            None => false,
-                        };
-                        op_bool(*op, x, y)
-                    }
-                    Value::Str(x) => {
-                        let y: String = self.children[1].eval(rec)?.try_into()?;
-                        op_str(*op, &x, &y)
-                    }
-                    _ => todo!("real"),
-                }
-            }
+            Token::Op(op) => op.eval(&rec, &self.children)?,
 
             token => todo!("eval: {:?}", token),
         })
-    }
-}
-
-macro_rules! num_op {
-    ($name:literal, $func:ident, $arg:ident, $rt:ident, $eq:expr) => {
-        fn $func(op: Op, x: $arg, y: $arg) -> Value {
-            use Op::*;
-            use Value::*;
-
-            match op {
-                Mul => $rt(x * y),
-                Div => $rt(x / y),
-                Add => $rt(x + y),
-                Sub => $rt(x - y),
-                Mod => $rt(x % y),
-                Eq => Bool($eq(x, y)),
-                Ne => Bool(!$eq(x, y)),
-                Gt => Bool(x > y),
-                Ge => Bool(x >= y),
-                Lt => Bool(x < y),
-                Le => Bool(x <= y),
-                _ => unreachable!("tried to perform {:?} on {} value", op, $name),
-            }
-        }
-    };
-}
-
-num_op! {"int", op_int, isize, Int,  |x, y| x == y}
-num_op! {"real", op_real, f64, Real, |x: f64, y: f64| (x - y).abs() < f64::EPSILON }
-
-fn op_bool(op: Op, x: bool, y: bool) -> Value {
-    use Op::*;
-    use Value::*;
-
-    match op {
-        Or => Bool(x || y),
-        And => Bool(x && y),
-        Not => Bool(!x),
-        _ => unreachable!("tried to perform {:?} on bool value", op),
-    }
-}
-
-fn op_str(op: Op, x: &str, y: &str) -> Value {
-    use Op::*;
-    use Value::*;
-
-    match op {
-        Eq => Bool(x == y),
-        Ne => Bool(x != y),
-        Concat => Str([x, y].concat()),
-        Match => {
-            // TODO compiled regex cache
-            let rx = Regex::new(y).expect("compile regexp");
-            Bool(rx.is_match(x))
-        }
-        _ => unreachable!("tried to perform {:?} on str value", op),
     }
 }
 
@@ -434,8 +439,8 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
             }
 
             '0'..='9' => {
-                let n = parse_num(&mut it);
-                tokens.push(Token::Int(n));
+                let num = parse_num(&mut it)?;
+                tokens.push(num);
             }
             '#' => {
                 it.next();
@@ -467,18 +472,28 @@ fn lex(e: &str) -> Result<Vec<Token>, Err> {
     Ok(tokens)
 }
 
-fn parse_num<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> isize {
-    let mut n = 0;
+fn parse_num<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> Result<Token, Err> {
+    let mut buf = String::new();
+    let mut seen_dot = false;
 
     while let Some(c) = it.peek() {
-        match c.to_digit(10) {
-            Some(m) => n = n * 10 + m,
-            None => break,
+        if c == &'.' {
+            seen_dot = true;
+            buf.push(it.next().unwrap());
+            continue;
         }
-        it.next();
+
+        if !c.is_digit(10) {
+            break;
+        }
+
+        buf.push(it.next().unwrap());
     }
 
-    n as isize
+    match seen_dot {
+        true => Ok(Token::Real(buf.parse()?)),
+        false => Ok(Token::Int(buf.parse()?)),
+    }
 }
 
 fn parse_string<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> String {
@@ -515,7 +530,9 @@ fn parse_field<I: Iterator<Item = char>>(it: &mut iter::Peekable<I>) -> (String,
             }
             '[' => {
                 it.next();
-                idx = Some(parse_num(it) as usize);
+                if let Token::Int(n) = parse_num(it).unwrap() {
+                    idx = Some(n as usize);
+                }
                 assert_eq!(it.next().unwrap(), ']');
                 break;
             }
@@ -568,6 +585,9 @@ mod tests {
         expect!("'foo' & 'bar' = 'foobar'");
         expect!("'bar' ~ 'b.r'");
         expect!("!('bus' ~ 'b.r')");
+
+        // floats
+        expect!("0.2 + 0.1 = 0.3");
 
         // working with records
         let mut record: Record = HashMap::new();
