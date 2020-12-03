@@ -45,7 +45,7 @@ pub fn decrypt_field(pwd: &str, field: &str) -> Result<String, DecryptionError> 
 
     // message size should be at least one block + salt
     if data.len() < 20 {
-        Err(MalformedData)?
+        return Err(MalformedData);
     }
 
     let key = transform_key(pwd);
@@ -54,7 +54,7 @@ pub fn decrypt_field(pwd: &str, field: &str) -> Result<String, DecryptionError> 
 
     if crc32::checksum_ieee(plaintext) != u32::from_le_bytes(crc.try_into().unwrap()) {
         // we decrypted some junk
-        Err(InvalidPassword)?
+        return Err(InvalidPassword);
     }
 
     Ok(str::from_utf8(plaintext)
@@ -95,8 +95,8 @@ fn encrypt(key: &[u8], data: &[u8]) -> Vec<u8> {
     let cipher = AesCbc::new_var(key, iv).expect("initialize cipher");
 
     let mut ciphertext = cipher.encrypt_vec(data);
-    for i in 0..4 {
-        ciphertext.push(salt[i])
+    for i in &salt {
+        ciphertext.push(*i);
     }
 
     ciphertext
@@ -105,8 +105,8 @@ fn encrypt(key: &[u8], data: &[u8]) -> Vec<u8> {
 fn transform_key(pwd: &str) -> [u8; 16] {
     // transform key
     let mut key = [0; 16];
-    for i in 0..16 {
-        key[i] = pwd.as_bytes()[i % pwd.len()]
+    for (i, b) in key.iter_mut().enumerate() {
+        *b = pwd.as_bytes()[i % pwd.len()]
     }
 
     key

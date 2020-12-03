@@ -7,7 +7,7 @@ use std::{cmp, iter};
 // Age > 1
 // ((Email ~ "foomail\.com") || (Age <= 18)) && !#Fixed
 
-#[derive(Debug, PartialEq, Eq, Ord, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum Op {
     Mul,
     Div,
@@ -166,7 +166,7 @@ impl Node {
 }
 
 macro_rules! num_op {
-    ($name:literal, $func:ident, $arg:ident, $rt:ident) => {
+    ($name:literal, $func:ident, $arg:ident, $rt:ident, $eq:expr) => {
         fn $func(op: Op, x: $arg, y: $arg) -> Value {
             use Op::*;
             use Value::*;
@@ -177,8 +177,8 @@ macro_rules! num_op {
                 Add => $rt(x + y),
                 Sub => $rt(x - y),
                 Mod => $rt(x % y),
-                Eq => Bool(x == y),
-                Ne => Bool(x != y),
+                Eq => Bool($eq(x, y)),
+                Ne => Bool(!$eq(x, y)),
                 Gt => Bool(x > y),
                 Ge => Bool(x >= y),
                 Lt => Bool(x < y),
@@ -189,8 +189,8 @@ macro_rules! num_op {
     };
 }
 
-num_op! {"int", op_int, isize, Int}
-num_op! {"real", op_real, f64, Real}
+num_op! {"int", op_int, isize, Int,  |x, y| x == y}
+num_op! {"real", op_real, f64, Real, |x: f64, y: f64| (x - y).abs() < f64::EPSILON }
 
 fn op_bool(op: Op, x: bool, y: bool) -> Value {
     use Op::*;
@@ -211,7 +211,7 @@ fn op_str(op: Op, x: &str, y: &str) -> Value {
     match op {
         Eq => Bool(x == y),
         Ne => Bool(x != y),
-        Concat => Str([x, y].concat().to_owned()),
+        Concat => Str([x, y].concat()),
         Match => {
             // TODO compiled regex cache
             let rx = Regex::new(y).expect("compile regexp");
@@ -236,7 +236,7 @@ impl TryFrom<Value> for isize {
         match value {
             Value::Int(i) => Ok(i),
             Value::Str(s) => Ok(s.parse().map_err(|_| "failed to convert string to int")?),
-            _ => Err("expected int")?,
+            _ => Err("expected int".into()),
         }
     }
 }
@@ -247,7 +247,7 @@ impl TryFrom<Value> for f64 {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Real(i) => Ok(i),
-            _ => Err("expected f64")?,
+            _ => Err("expected f64".into()),
         }
     }
 }
@@ -258,7 +258,7 @@ impl TryFrom<Value> for bool {
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
             Value::Bool(b) => Ok(b),
-            _ => Err("expected bool")?,
+            _ => Err("expected bool".into()),
         }
     }
 }
@@ -268,8 +268,8 @@ impl TryFrom<Value> for String {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Str(s) => Ok(s.clone()),
-            _ => Err("expected string")?,
+            Value::Str(s) => Ok(s),
+            _ => Err("expected string".into()),
         }
     }
 }
@@ -294,7 +294,7 @@ impl Sx {
         let root = nodes.remove(0);
 
         if !matches!(root.item, Token::Op(_)) {
-            Err("root node is not op")?
+            return Err("root node is not op".into());
         }
 
         Ok(Sx(root))
@@ -321,7 +321,7 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
         _ => {
             children.push(nodes.remove(i - 1));
             children.push(nodes.remove(i));
-            i = i - 1;
+            i -= 1;
         }
     }
 
@@ -335,12 +335,9 @@ fn fold_expr(nodes: &mut Vec<Node>, i: usize) -> Result<(), Err> {
     let before = nodes.get(i - 1).map(|n| n.item.clone());
     let after = nodes.get(i + 1).map(|n| n.item.clone());
 
-    match before.zip(after) {
-        Some((Token::Paren(true), Token::Paren(false))) => {
-            nodes.remove(i + 1);
-            nodes.remove(i - 1);
-        }
-        _ => {}
+    if let Some((Token::Paren(true), Token::Paren(false))) = before.zip(after) {
+        nodes.remove(i + 1);
+        nodes.remove(i - 1);
     }
 
     Ok(())
@@ -361,7 +358,7 @@ fn find_first(nodes: &[Node]) -> Option<usize> {
     let mut max_paren = Paren { lvl: 0, idx: 0 };
 
     for (i, node) in nodes.iter().enumerate() {
-        if node.children.len() > 0 {
+        if !node.children.is_empty() {
             continue;
         }
 

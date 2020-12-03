@@ -23,13 +23,13 @@ pub(crate) fn lex(s: &str) -> Result<Vec<Token>, &'static str> {
             continue;
         }
 
-        match line.chars().nth(0).unwrap() {
+        match line.chars().next().unwrap() {
             '#' => {
                 it.next();
             }
             '%' => {
                 let (key, value) = read_line(&mut it)?;
-                let key = key.trim_start_matches("%").to_string();
+                let key = key.trim_start_matches('%').to_string();
                 tokens.push(Token::Keyword(key, value));
             }
             _ => {

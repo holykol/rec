@@ -66,7 +66,7 @@ impl Parser {
                 for field in args {
                     let meta = self.db.types.entry(field.to_owned()).or_default();
                     if !matches!(meta.kind, Kind::Line) {
-                        Err("confidential fields are always lines")?
+                        return Err("confidential fields are always lines".into());
                     }
                     meta.kind = Kind::Confidential;
                 }
@@ -115,42 +115,42 @@ fn parse_value(kind: &Kind, val: &str) -> Result<Value, Err> {
         Kind::Bool => match val {
             "true" | "yes" | "1" => Bool(true),
             "false" | "no" | "0" => Bool(false),
-            _ => Err(format!("unexpected boolean value: {}", val))?,
+            _ => return Err(format!("unexpected boolean value: {}", val).into()),
         },
         Kind::Date => todo!("date parsing"),
         Kind::Email => {
             if !val.contains('@') {
                 // yes
-                Err(format!("invalid email adress: {}", val))?
+                return Err(format!("invalid email adress: {}", val).into());
             }
             Email(val.to_owned())
         }
         Kind::UUID => UUID(val.parse()?),
         Kind::Confidential => {
             if !val.starts_with(crypt::ENCRYPTED_PREFIX) {
-                Err(format!("possibly unencrypted confidential value"))?
+                return Err("possibly unencrypted confidential value".into());
             }
             Confidential(val.to_owned())
         }
         Kind::Range(min, max) => {
             let n = val.parse()?;
             if n < *min || n > *max {
-                Err("value is out of range")?
+                return Err("value is out of range".into());
             }
             Range(n)
         }
         Kind::Regexp(rx) => {
             if !rx.is_match(val) {
-                Err(format!("{} does not match required format", val))?
+                return Err(format!("{} does not match required format", val).into());
             }
             Regexp(val.to_owned())
         }
         Kind::Viz(_) => Viz(val.to_owned()), // We can't validate that other database has the key
         Kind::Enum(variants) => {
             if !variants.contains(&val.to_lowercase()) {
-                Err(format!("invalid enum value: {}", val))?
+                return Err(format!("invalid enum value: {}", val).into());
             }
-            Enum(val.to_lowercase().to_owned())
+            Enum(val.to_lowercase())
         }
     })
 }
@@ -185,7 +185,7 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Err> {
             }
 
             if from > to {
-                Err("impossible range")?
+                return Err("impossible range".into());
             }
 
             Kind::Range(from, to)
@@ -209,12 +209,12 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Err> {
 
             match FIELD_RX.is_match(key) {
                 true => Kind::Viz(key.to_string()),
-                false => Err(format!("invalid viz value: {}", key))?,
+                false => return Err(format!("invalid viz value: {}", key).into()),
             }
         }
         "enum" => {
             if args.len() < 3 {
-                return Err("expected at least one enum variant")?;
+                return Err("expected at least one enum variant".into());
             }
 
             let mut variants = HashSet::with_capacity(args.len() - 2);
@@ -222,13 +222,13 @@ fn parse_type(args: Vec<&str>) -> Result<Kind, Err> {
             for v in args.iter().skip(2).map(|s| s.to_string()) {
                 match ENUM_RX.is_match(&v) {
                     true => variants.insert(v.to_lowercase()),
-                    false => return Err(format!("invalid enum value: {}", v))?,
+                    false => return Err(format!("invalid enum value: {}", v).into()),
                 };
             }
 
             Enum(variants)
         }
-        _ => Err(format!("unknown type: {}", tt))?,
+        _ => return Err(format!("unknown type: {}", tt).into()),
     })
 }
 

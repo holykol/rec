@@ -49,7 +49,7 @@ impl FromStr for Constraint {
             "mandatory" => Ok(Constraint::Mandatory),
             "allowed" => Ok(Constraint::Allowed),
             "prohibited" => Ok(Constraint::Prohibited),
-            _ => Err(format!("unknown constraint: {}", s))?,
+            _ => Err(format!("unknown constraint: {}", s).into()),
         }
     }
 }
