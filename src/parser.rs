@@ -26,7 +26,6 @@ impl Parser {
         let mut records = Vec::new();
 
         for token in tokens.iter() {
-            println!("token: {:?}", token);
             match token {
                 Token::Keyword(keyword, value) => {
                     let args = value.split_whitespace().collect();
@@ -55,11 +54,16 @@ impl Parser {
             "rec" => self.db.rectype = Some(args.get(0).ok_or("expected rec type")?.to_string()),
             "key" => self.db.primary_key = Some(args.get(0).ok_or("expected key")?.to_string()),
             "doc" => self.db.doc = Some(args.join(" ")),
+            "sort" => {
+                let field = args.get(0).ok_or("expected sort field")?.to_string();
+                self.db.sort_field = Some(field)
+            }
             "type" => {
                 let field_name = args.get(0).ok_or("expected field name")?.to_string();
                 let kind = parse_type(args)?;
 
                 let meta = self.db.types.entry(field_name).or_default();
+
                 meta.kind = kind;
             }
             "confidential" => {
@@ -90,11 +94,15 @@ impl Parser {
         Ok(())
     }
 
+    // TODO use Cow
     fn parse_field(&mut self, key: &str, value: &str) -> Result<(), Err> {
         let mut rec = self.current_record.take().unwrap_or_default();
 
+        if !self.db.fields.contains(&key.to_owned()) {
+            self.db.fields.insert(rec.len(), key.to_owned());
+        }
+
         let meta = self.db.types.entry(key.to_owned()).or_default();
-        println!("{:?}", meta);
         let val = parse_value(&meta.kind, value)?;
 
         rec.insert(key.to_owned(), val);
@@ -305,13 +313,48 @@ mod tests {
     fn parser_confidential() {
         let db = DB::new("%confidential: Password Token").unwrap();
 
-        assert!(matches!(db.types.get("Password").unwrap(), Meta { kind: Kind::Confidential, .. }));
-        assert!(matches!(db.types.get("Token").unwrap(), Meta { kind: Kind::Confidential, .. }));
+        assert!(matches!(
+            db.types.get("Password").unwrap(),
+            Meta {
+                kind: Kind::Confidential,
+                ..
+            }
+        ));
+        assert!(matches!(
+            db.types.get("Token").unwrap(),
+            Meta {
+                kind: Kind::Confidential,
+                ..
+            }
+        ));
 
         assert!(matches!(
             parse_value(&Kind::Confidential, "encrypted-AABBCC").unwrap(),
             Value::Confidential(_)
         ));
         assert!(parse_value(&Kind::Confidential, "blah").is_err());
-    } //
+    }
+
+    #[test]
+    fn parser_fields_order() {
+        const TEXT: &str = "
+%type: Login line
+%type: Password line
+
+Login: blah
+Password: chickens
+Website: example.com
+
+Login: bruh
+Password: qwerty
+Notes: very secure password
+";
+        let db = DB::new(TEXT).unwrap();
+        let expected = vec!["Login", "Password", "Notes", "Website"]
+            .iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        assert_eq!(db.fields, expected)
+    }
 }

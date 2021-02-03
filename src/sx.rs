@@ -281,7 +281,7 @@ impl TryFrom<Value> for String {
 }
 
 #[derive(Debug)]
-struct Sx(Node);
+pub struct Sx(Node);
 
 impl Sx {
     pub fn new(e: &str) -> Result<Self, Err> {
