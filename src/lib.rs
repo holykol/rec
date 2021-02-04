@@ -149,7 +149,7 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
-    pub fn find(&self) -> Result<impl Iterator<Item = Record>, Err> {
+    pub fn find(&self) -> Result<impl Iterator<Item = &'a Record>, Err> {
         let mut results = Vec::new();
 
         for rec in &self.db.records {
@@ -159,7 +159,7 @@ impl<'a> QueryBuilder<'a> {
                 }
             }
 
-            results.push(rec.clone())
+            results.push(rec)
         }
 
         if let Some(ref field) = self.sort.clone().or(self.db.sort_field.clone()) {
@@ -173,8 +173,11 @@ impl<'a> QueryBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate test;
+    use std::hint::black_box;
+    use test::Bencher;
+
     #[test]
-    #[ignore = "come back in around 20 years"]
     fn it_works() -> Result<(), Err> {
         let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
         let db = DB::new(buf).unwrap();
@@ -184,7 +187,7 @@ mod tests {
             .sort_by("Name")
             .find()?;
 
-        todo!();
+        assert_eq!(result.count(), 1);
         Ok(())
     }
 
@@ -192,5 +195,11 @@ mod tests {
     fn parser_records() {
         let db = DB::new("hello: world\nblah: blah\n\nhello: mom\nblah: bruh").unwrap();
         assert_eq!(db.records.len(), 2);
+    }
+
+    #[bench]
+    fn bench(b: &mut Bencher) {
+        let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
+        b.iter(|| DB::new(black_box(buf)).unwrap());
     }
 }
