@@ -17,6 +17,7 @@ use parser::Parser;
 use std::{
     collections::{HashMap, HashSet},
     error::Error,
+    fmt::{self, Display, Formatter, Pointer},
     fs,
     path::Path,
     str::FromStr,
@@ -95,6 +96,26 @@ pub enum Value {
     Enum(String),
 }
 
+impl Display for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        use Value::*;
+        match self {
+            Line(s) => write!(f, "{}", s),
+            Int(s) => write!(f, "{}", s),
+            Real(s) => write!(f, "{}", s),
+            Bool(s) => write!(f, "{}", s),
+            Date(s) => write!(f, "{}", s),
+            Email(s) => write!(f, "{}", s),
+            UUID(s) => write!(f, "{}", s),
+            Confidential(s) => write!(f, "{}", s),
+            Range(s) => write!(f, "{}", s),
+            Regexp(s) => write!(f, "{}", s),
+            Viz(s) => write!(f, "{}", s),
+            Enum(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct DB {
     pub rectype: Option<String>,
@@ -125,6 +146,7 @@ impl DB {
 pub struct QueryBuilder<'a> {
     db: &'a DB,
     sx: Option<Sx>,
+    contains: Option<String>,
     sort: Option<String>,
     unique: bool,
 }
@@ -134,6 +156,7 @@ impl<'a> QueryBuilder<'a> {
         Self {
             db,
             sx: None,
+            contains: None,
             sort: None,
             unique: false,
         }
@@ -149,12 +172,23 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    pub fn contains(&mut self, query: &str) -> &mut Self {
+        self.contains = Some(query.to_owned());
+        self
+    }
+
     pub fn find(&self) -> Result<impl Iterator<Item = &'a Record>, Err> {
         let mut results = Vec::new();
 
         for rec in &self.db.records {
             if let Some(ref sx) = self.sx {
                 if !sx.eval(&rec)? {
+                    continue;
+                }
+            }
+
+            if let Some(ref query) = self.contains {
+                if !rec.values().any(|f| f.to_string().contains(query)) {
                     continue;
                 }
             }
@@ -184,6 +218,7 @@ mod tests {
 
         let result = QueryBuilder::new(&db)
             .where_sx("Login = 'foo'")?
+            .contains("Hello")
             .sort_by("Name")
             .find()?;
 
@@ -198,8 +233,22 @@ mod tests {
     }
 
     #[bench]
-    fn bench(b: &mut Bencher) {
+    fn bench_parse(b: &mut Bencher) {
         let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
         b.iter(|| DB::new(black_box(buf)).unwrap());
+    }
+
+    #[bench]
+    fn bench_find(b: &mut Bencher) {
+        let buf = include_str!("/home/t/dev/rust/rec/src/test.rec");
+        let db = DB::new(black_box(buf)).unwrap();
+        b.iter(|| {
+            QueryBuilder::new(&db)
+                .where_sx("Login = 'foo'")
+                .unwrap()
+                .sort_by("Name")
+                .find()
+                .unwrap()
+        });
     }
 }
